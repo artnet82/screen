@@ -1,0 +1,15 @@
+# PyInstaller
+build/
+dist/
+__pycache__/
+*.spec
+
+# Временные файлы записи
+*.tmp.mp4
+*.tmp.wav
+
+# Установщик Python для Wine (нужен локально, не в репо)
+python-3.11.9-amd64.exe
+
+# Wine
+.wine/
