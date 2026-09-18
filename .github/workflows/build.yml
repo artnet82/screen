@@ -1,17 +1,38 @@
 name: Build Windows EXE
-on: [push, workflow_dispatch]
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: # Позволяет запускать сборку вручную
 
 jobs:
   build:
     runs-on: windows-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.11' }
-      - run: |
-          pip install mss opencv-python numpy pyinstaller pillow soundcard soundfile
-          pyinstaller --onefile --noconsole --name oko --icon=images.ico --add-data "images.ico;." --add-binary "ffmpeg.exe;." --hidden-import=soundcard --hidden-import=soundfile --collect-all soundcard --collect-all soundfile app.py
-      - uses: actions/upload-artifact@v4
-        with:
-          name: oko-windows
-          path: dist/oko.exe
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --onefile --windowed --name="ScreenRecorder" ^
+          --hidden-import=soundcard ^
+          --add-binary="ffmpeg.exe;." ^
+          main.py
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ScreenRecorder-Windows
+        path: dist/ScreenRecorder.exe
