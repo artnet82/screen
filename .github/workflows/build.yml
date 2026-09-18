@@ -3,7 +3,7 @@ name: Build Windows EXE
 on:
   push:
     branches: [ main ]
-  workflow_dispatch: # Позволяет запускать сборку вручную
+  workflow_dispatch:
 
 jobs:
   build:
@@ -25,11 +25,7 @@ jobs:
         pip install pyinstaller
 
     - name: Build with PyInstaller
-      run: |
-        pyinstaller --onefile --windowed --name="ScreenRecorder" ^
-          --hidden-import=soundcard ^
-          --add-binary="ffmpeg.exe;." ^
-          main.py
+      run: pyinstaller --onefile --windowed --name="ScreenRecorder" --hidden-import=soundcard --hidden-import=soundcard.mediafoundation --add-binary="ffmpeg.exe;." app.py
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
