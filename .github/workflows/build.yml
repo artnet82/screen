@@ -25,16 +25,7 @@ jobs:
         pip install pyinstaller
 
     - name: Build with PyInstaller
-      run: |
-        pyinstaller --onefile --windowed --name="ScreenRecorder" ^
-          --hidden-import=soundcard ^
-          --hidden-import=soundcard.mediafoundation ^
-          --hidden-import=cv2 ^
-          --collect-submodules=cv2 ^
-          --collect-submodules=soundcard ^
-          --collect-data=soundcard ^
-          --add-binary="ffmpeg.exe;." ^
-          app.py
+      run: pyinstaller --onefile --windowed --name="ScreenRecorder" --hidden-import=soundcard --hidden-import=soundcard.mediafoundation --hidden-import=cv2 --collect-submodules=cv2 --collect-submodules=soundcard --collect-data=soundcard --add-binary="ffmpeg.exe;." app.py
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
