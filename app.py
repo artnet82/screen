@@ -502,7 +502,8 @@ class App:
         threading.Thread(target=worker, daemon=True).start()
 
     def _stop_done(self):
-        self.start_btn.config(state=        self.pause_btn.config(state=tk.DISABLED, text="Пауза")
+        self.start_btn.config(state=tk.NORMAL)
+        self.pause_btn.config(state=tk.DISABLED, text="Пауза")
         self.stop_btn.config(state=tk.DISABLED)
         self.name_entry.config(state=tk.NORMAL)
         self.status.config(text="Файл сохранён в папку Видео",
