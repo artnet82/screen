@@ -34,6 +34,29 @@ def resource_path(rel):
     return os.path.join(base, rel)
 
 
+def find_ffmpeg():
+    """Ищет ffmpeg.exe в нескольких местах."""
+    candidates = []
+
+    # 1) Внутри PyInstaller-бандла (onefile)
+    if hasattr(sys, "_MEIPASS"):
+        candidates.append(os.path.join(sys._MEIPASS, "ffmpeg.exe"))
+
+    # 2) Рядом с .exe (для onefile сборки)
+    if getattr(sys, "frozen", False):
+        candidates.append(os.path.join(os.path.dirname(sys.executable), "ffmpeg.exe"))
+
+    # 3) Рядом со скриптом (при запуске из исходников)
+    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ffmpeg.exe"))
+
+    for path in candidates:
+        if os.path.exists(path) and os.path.getsize(path) > 100000:
+            return path
+
+    # 4) В системном PATH
+    return shutil.which("ffmpeg")
+
+
 class ScreenRecorder:
     def __init__(self, fps=20, record_audio=True, samplerate=48000, region=None):
         self.fps = fps
@@ -50,7 +73,7 @@ class ScreenRecorder:
         self.final_path = None
         self._audio_frames = []
         self.audio_ok = False
-        self.warning = None   # текст предупреждения для UI
+        self.warning = None
 
     # ---------- запуск ----------
     def start(self, filename):
@@ -203,9 +226,20 @@ class ScreenRecorder:
             and os.path.getsize(self.audio_path) > 1000
         )
 
-        ffmpeg = resource_path("ffmpeg.exe")
-        if not os.path.exists(ffmpeg):
-            ffmpeg = shutil.which("ffmpeg")
+        ffmpeg = find_ffmpeg()
+
+        # Диагностика — поможет понять, где ищется ffmpeg
+        print("=== ffmpeg search ===")
+        print("sys._MEIPASS:", getattr(sys, "_MEIPASS", "нет"))
+        print("sys.executable:", sys.executable)
+        print("sys.frozen:", getattr(sys, "frozen", False))
+        print("Найденный ffmpeg:", ffmpeg)
+        try:
+            print("Файлы рядом с exe:",
+                  os.listdir(os.path.dirname(sys.executable)))
+        except Exception as e:
+            print("Не удалось прочитать папку:", e)
+        print("====================")
 
         # Если ffmpeg недоступен — отдадим хотя бы «сырое» видео.
         if not ffmpeg:
@@ -468,8 +502,7 @@ class App:
         threading.Thread(target=worker, daemon=True).start()
 
     def _stop_done(self):
-        self.start_btn.config(state=tk.NORMAL)
-        self.pause_btn.config(state=tk.DISABLED, text="Пауза")
+        self.start_btn.config(state=        self.pause_btn.config(state=tk.DISABLED, text="Пауза")
         self.stop_btn.config(state=tk.DISABLED)
         self.name_entry.config(state=tk.NORMAL)
         self.status.config(text="Файл сохранён в папку Видео",
