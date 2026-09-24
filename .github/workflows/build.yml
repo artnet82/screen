@@ -1,13 +1,39 @@
-- name: Build with PyInstaller
-  run: pyinstaller --onefile --windowed --name="ScreenRecorder" --hidden-import=soundcard --hidden-import=soundcard.mediafoundation --hidden-import=cv2 --collect-submodules=cv2 --collect-submodules=soundcard --collect-data=soundcard --add-data "ffmpeg.exe;." app.py
+name: Build Windows EXE
 
-- name: Prepare artifact
-  run: copy ffmpeg.exe dist\ffmpeg.exe
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
 
-- name: Upload artifact
-  uses: actions/upload-artifact@v4
-  with:
-    name: ScreenRecorder-Windows
-    path: |
-      dist/ScreenRecorder.exe
-      dist/ffmpeg.exe
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+
+    - name: Build with PyInstaller
+      run: pyinstaller --onefile --windowed --name="ScreenRecorder" --hidden-import=soundcard --hidden-import=soundcard.mediafoundation --hidden-import=cv2 --collect-submodules=cv2 --collect-submodules=soundcard --collect-data=soundcard --add-data "ffmpeg.exe;." app.py
+
+    - name: Prepare artifact
+      run: copy ffmpeg.exe dist\ffmpeg.exe
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ScreenRecorder-Windows
+        path: |
+          dist/ScreenRecorder.exe
+          dist/ffmpeg.exe
