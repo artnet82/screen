@@ -15,13 +15,19 @@ import mss
 import soundfile as sf
 import soundcard as sc
 
+# --- глобальные горячие клавиши (если библиотека доступна) ---
+try:
+    import keyboard as _kb
+    HAS_KB = True
+except ImportError:
+    HAS_KB = False
 
-# DPI-совместимость (нужна до создания Tk), иначе выделение области
-# не совпадёт с реальными пикселями на Hi-DPI экранах Windows.
+
+# DPI-совместимость (до создания Tk)
 if os.name == "nt":
     try:
         import ctypes
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_AWARE
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except Exception:
         try:
             ctypes.windll.user32.SetProcessDPIAware()
@@ -35,44 +41,39 @@ def resource_path(rel):
 
 
 def find_ffmpeg():
-    """Ищет ffmpeg.exe в нескольких местах."""
     candidates = []
-
-    # 1) Внутри PyInstaller-бандла (onefile)
     if hasattr(sys, "_MEIPASS"):
         candidates.append(os.path.join(sys._MEIPASS, "ffmpeg.exe"))
-
-    # 2) Рядом с .exe (для onefile сборки)
     if getattr(sys, "frozen", False):
         candidates.append(os.path.join(os.path.dirname(sys.executable), "ffmpeg.exe"))
-
-    # 3) Рядом со скриптом (при запуске из исходников)
     candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ffmpeg.exe"))
-
     for path in candidates:
         if os.path.exists(path) and os.path.getsize(path) > 100000:
             return path
-
-    # 4) В системном PATH
     return shutil.which("ffmpeg")
 
 
 class ScreenRecorder:
-    def __init__(self, fps=20, record_audio=True, samplerate=48000, region=None):
+    def __init__(self, fps=20, record_audio=True, record_mic=True,
+                 samplerate=48000, region=None):
         self.fps = fps
         self.record_audio = record_audio
+        self.record_mic = record_mic
         self.samplerate = samplerate
-        self.region = region  # dict {'left','top','width','height'} или None
+        self.region = region
         self.recording = False
         self.paused = False
         self.video_writer = None
         self.video_thread = None
         self.audio_thread = None
+        self.mic_thread = None
         self.video_path = None
         self.audio_path = None
         self.final_path = None
         self._audio_frames = []
+        self._mic_frames = []
         self.audio_ok = False
+        self.mic_ok = False
         self.warning = None
 
     # ---------- запуск ----------
@@ -84,7 +85,9 @@ class ScreenRecorder:
         self.video_path = base + ".video.tmp.mp4"
         self.audio_path = base + ".audio.tmp.wav"
         self._audio_frames = []
+        self._mic_frames = []
         self.audio_ok = False
+        self.mic_ok = False
         self.warning = None
 
         self.recording = True
@@ -94,8 +97,14 @@ class ScreenRecorder:
         self.video_thread.start()
 
         if self.record_audio:
-            self.audio_thread = threading.Thread(target=self._record_audio, daemon=True)
+            self.audio_thread = threading.Thread(
+                target=self._record_system_audio, daemon=True)
             self.audio_thread.start()
+
+        if self.record_mic:
+            self.mic_thread = threading.Thread(
+                target=self._record_mic, daemon=True)
+            self.mic_thread.start()
 
     # ---------- видео ----------
     def _record_video(self):
@@ -111,7 +120,6 @@ class ScreenRecorder:
                 else:
                     monitor = sct.monitors[1]
 
-                # H.264 требует чётных размеров — заранее подрежем.
                 width = monitor["width"] - (monitor["width"] % 2)
                 height = monitor["height"] - (monitor["height"] % 2)
 
@@ -127,7 +135,6 @@ class ScreenRecorder:
                 last_frame = None
 
                 while self.recording:
-                    # Пауза: накапливаем длительность, кадры не пишем.
                     if self.paused:
                         if pause_start is None:
                             pause_start = time.time()
@@ -137,12 +144,10 @@ class ScreenRecorder:
                         total_pause += time.time() - pause_start
                         pause_start = None
 
-                    # Сколько кадров ДОЛЖНО быть к этому моменту по стенным часам.
                     active = time.time() - start_time - total_pause
                     target = int(active * self.fps) + 1
 
                     if frame_count < target:
-                        # Захватываем новый кадр.
                         try:
                             img = np.array(sct.grab(monitor))
                             frame = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
@@ -152,8 +157,6 @@ class ScreenRecorder:
                         except Exception:
                             pass
 
-                        # Если отстаём — дублируем последний кадр, чтобы
-                        # длительность видео совпадала с реальной.
                         while frame_count < target and self.recording:
                             if last_frame is not None:
                                 self.video_writer.write(last_frame)
@@ -167,8 +170,8 @@ class ScreenRecorder:
         except Exception as e:
             print("Ошибка записи видео:", e)
 
-    # ---------- звук (системный, loopback) ----------
-    def _record_audio(self):
+    # ---------- системный звук ----------
+    def _record_system_audio(self):
         try:
             speaker = sc.default_speaker()
             mic = sc.get_microphone(speaker.name, include_loopback=True)
@@ -179,16 +182,41 @@ class ScreenRecorder:
             with mic.recorder(samplerate=self.samplerate, channels=2) as rec:
                 self.audio_ok = True
                 while self.recording:
-                    # ВАЖНО: читаем ВСЕГДА, иначе во время паузы буфер
-                    # накапливается и после возобновления «выстреливает»
-                    # большим куском — это и давало рассинхрон.
                     data = rec.record(numframes=block)
                     if self.paused:
                         continue
                     self._audio_frames.append(data)
         except Exception as e:
-            print("Ошибка записи звука:", e)
+            print("Ошибка записи системного звука:", e)
             self.audio_ok = False
+
+    # ---------- микрофон ----------
+    def _record_mic(self):
+        try:
+            mic = sc.default_microphone()
+            if mic is None:
+                print("Микрофон не найден")
+                return
+        except Exception as e:
+            print("Ошибка доступа к микрофону:", e)
+            return
+
+        block = 1024
+        # Пробуем сначала 1 канал, потом 2 (некоторые USB-микрофоны только стерео).
+        for ch in (1, 2):
+            try:
+                with mic.recorder(samplerate=self.samplerate, channels=ch) as rec:
+                    self.mic_ok = True
+                    while self.recording:
+                        data = rec.record(numframes=block)
+                        if self.paused:
+                            continue
+                        self._mic_frames.append(data)
+                    return
+            except Exception as e:
+                print(f"Микрофон (канал {ch}) недоступен: {e}")
+                self._mic_frames = []
+                self.mic_ok = False
 
     # ---------- управление ----------
     def pause(self):
@@ -203,45 +231,82 @@ class ScreenRecorder:
             self.video_thread.join(timeout=15)
         if self.audio_thread:
             self.audio_thread.join(timeout=15)
+        if self.mic_thread:
+            self.mic_thread.join(timeout=15)
 
-        if self.record_audio and self._audio_frames:
+        mixed = self._mix_audio()
+        if mixed is not None and len(mixed) > 0:
             try:
-                audio = np.concatenate(self._audio_frames, axis=0)
-                sf.write(self.audio_path, audio, self.samplerate)
+                sf.write(self.audio_path, mixed, self.samplerate)
             except Exception as e:
                 print("Ошибка сохранения аудио:", e)
+                try:
+                    os.remove(self.audio_path)
+                except OSError:
+                    pass
                 self.audio_path = None
+        else:
+            self.audio_path = None
 
         self._merge()
 
-    # ---------- склейка + перекодирование в H.264 ----------
+    def _mix_audio(self):
+        sys_audio = None
+        mic_audio = None
+        if self._audio_frames:
+            try:
+                sys_audio = np.concatenate(self._audio_frames, axis=0)
+            except Exception as e:
+                print("concat sys error:", e)
+        if self._mic_frames:
+            try:
+                mic_audio = np.concatenate(self._mic_frames, axis=0)
+            except Exception as e:
+                print("concat mic error:", e)
+
+        def to_stereo(a):
+            if a is None:
+                return None
+            a = a.astype(np.float32, copy=False)
+            if a.ndim == 1:
+                return np.stack([a, a], axis=-1)
+            if a.shape[1] == 1:
+                return np.repeat(a, 2, axis=1)
+            if a.shape[1] > 2:
+                return a[:, :2]
+            return a
+
+        sys_audio = to_stereo(sys_audio)
+        mic_audio = to_stereo(mic_audio)
+
+        if sys_audio is None:
+            return mic_audio
+        if mic_audio is None:
+            return sys_audio
+
+        n = max(len(sys_audio), len(mic_audio))
+        out = np.zeros((n, 2), dtype=np.float32)
+        out[:len(sys_audio)] += sys_audio
+        out[:len(mic_audio)] += mic_audio
+
+        peak = float(np.max(np.abs(out))) if out.size else 0.0
+        if peak > 0.99:
+            out *= (0.99 / peak)
+        return out
+
+    # ---------- склейка ----------
     def _merge(self):
         if not os.path.exists(self.video_path):
             return
 
-        has_audio = (
-            self.record_audio
-            and self.audio_path
+        has_audio = bool(
+            self.audio_path
             and os.path.exists(self.audio_path)
             and os.path.getsize(self.audio_path) > 1000
         )
 
         ffmpeg = find_ffmpeg()
 
-        # Диагностика — поможет понять, где ищется ffmpeg
-        print("=== ffmpeg search ===")
-        print("sys._MEIPASS:", getattr(sys, "_MEIPASS", "нет"))
-        print("sys.executable:", sys.executable)
-        print("sys.frozen:", getattr(sys, "frozen", False))
-        print("Найденный ffmpeg:", ffmpeg)
-        try:
-            print("Файлы рядом с exe:",
-                  os.listdir(os.path.dirname(sys.executable)))
-        except Exception as e:
-            print("Не удалось прочитать папку:", e)
-        print("====================")
-
-        # Если ffmpeg недоступен — отдадим хотя бы «сырое» видео.
         if not ffmpeg:
             try:
                 os.replace(self.video_path, self.final_path)
@@ -253,15 +318,13 @@ class ScreenRecorder:
                     os.replace(self.audio_path, wav_final)
                 except Exception:
                     pass
-                self.warning = ("ffmpeg не найден",
-                                "Видео сохранено без звука.\n"
-                                "Аудио сохранено отдельным WAV-файлом.")
+                self.warning = (
+                    "ffmpeg не найден",
+                    "Видео сохранено без звука.\n"
+                    "Аудио сохранено отдельным WAV-файлом.",
+                )
             return
 
-        # Ключевые параметры сжатия:
-        #   -c:v libx264  -preset veryfast  -crf 26  -> сильно меньше размер
-        #   -pix_fmt yuv420p                            -> совместимость
-        #   -movflags +faststart                        -> быстрый старт
         common_v = [
             "-c:v", "libx264",
             "-preset", "veryfast",
@@ -313,7 +376,7 @@ class App:
     def __init__(self, root):
         self.root = root
         root.title("Око — запись экрана")
-        root.geometry("480x430")
+        root.geometry("480x460")
         root.resizable(False, False)
 
         try:
@@ -323,6 +386,7 @@ class App:
 
         self.recorder = None
         self.region = None
+        self._busy = False  # True от старта до завершения кодирования
 
         self.videos_dir = Path.home() / "Videos"
         self.videos_dir.mkdir(exist_ok=True)
@@ -333,7 +397,11 @@ class App:
 
         self.audio_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(root, text="Записывать системный звук",
-                        variable=self.audio_var).pack(pady=5)
+                        variable=self.audio_var).pack(pady=3)
+
+        self.mic_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(root, text="Записывать микрофон",
+                        variable=self.mic_var).pack(pady=3)
 
         # --- выбор области ---
         region_frame = ttk.LabelFrame(root, text="Область записи")
@@ -357,28 +425,65 @@ class App:
                      values=["15", "20", "24", "30"], width=5,
                      state="readonly").pack(side=tk.LEFT, padx=4)
 
-        ttk.Label(root, text=f"Папка: {self.videos_dir}",
-                  foreground="gray").pack(pady=(4, 8))
-
         btn_frame = ttk.Frame(root)
-        btn_frame.pack(pady=6)
+        btn_frame.pack(pady=10)
 
-        self.start_btn = ttk.Button(btn_frame, text="Начать запись",
+        self.start_btn = ttk.Button(btn_frame, text="Начать (F9)",
                                     command=self.start)
         self.start_btn.pack(side=tk.LEFT, padx=5)
 
-        self.pause_btn = ttk.Button(btn_frame, text="Пауза",
+        self.pause_btn = ttk.Button(btn_frame, text="Пауза (F10)",
                                     command=self.toggle_pause, state=tk.DISABLED)
         self.pause_btn.pack(side=tk.LEFT, padx=5)
 
-        self.stop_btn = ttk.Button(btn_frame, text="Стоп",
+        self.stop_btn = ttk.Button(btn_frame, text="Стоп (F11)",
                                    command=self.stop, state=tk.DISABLED)
         self.stop_btn.pack(side=tk.LEFT, padx=5)
 
         self.status = ttk.Label(root, text="Готово", foreground="blue")
-        self.status.pack(pady=12)
+        self.status.pack(pady=10)
 
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        self._setup_hotkeys()
+
+    # ---------- горячие клавиши ----------
+    def _setup_hotkeys(self):
+        if HAS_KB:
+            try:
+                _kb.add_hotkey('F9', lambda: self.root.after(0, self._hotkey_start))
+                _kb.add_hotkey('F10', lambda: self.root.after(0, self._hotkey_pause))
+                _kb.add_hotkey('F11', lambda: self.root.after(0, self._hotkey_stop))
+            except Exception as e:
+                print("Глобальные горячие клавиши не установлены:", e)
+        # локальный fallback на случай, когда окно в фокусе
+        self.root.bind('<F9>', lambda e: self._hotkey_start())
+        self.root.bind('<F10>', lambda e: self._hotkey_pause())
+        self.root.bind('<F11>', lambda e: self._hotkey_stop())
+
+    def _hotkey_start(self):
+        if self._busy:
+            return
+        try:
+            self.start()
+        except Exception as e:
+            print("hotkey start error:", e)
+
+    def _hotkey_pause(self):
+        if not self._busy or not self.recorder or not self.recorder.recording:
+            return
+        try:
+            self.toggle_pause()
+        except Exception as e:
+            print("hotkey pause error:", e)
+
+    def _hotkey_stop(self):
+        if not self._busy or not self.recorder or not self.recorder.recording:
+            return
+        try:
+            self.stop()
+        except Exception as e:
+            print("hotkey stop error:", e)
 
     # ---------- выбор области ----------
     def select_region(self):
@@ -417,7 +522,6 @@ class App:
             x2 = max(state["x0"], e.x_root)
             y2 = max(state["y0"], e.y_root)
             w, h = x2 - x1, y2 - y1
-            # H.264 требует чётных размеров.
             w -= w % 2
             h -= h % 2
             if w >= 40 and h >= 40:
@@ -435,6 +539,7 @@ class App:
         def close(_e=None):
             overlay.destroy()
             self.root.deiconify()
+            self.root.lift()
 
         canvas.bind("<ButtonPress-1>", on_press)
         canvas.bind("<B1-Motion>", on_drag)
@@ -448,6 +553,9 @@ class App:
 
     # ---------- запуск / пауза / стоп ----------
     def start(self):
+        if self._busy:
+            return
+
         name = self.name_entry.get().strip()
         name = "".join(c for c in name if c not in r'\/:*?"<>|').strip()
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -462,27 +570,43 @@ class App:
         self.recorder = ScreenRecorder(
             fps=fps,
             record_audio=self.audio_var.get(),
+            record_mic=self.mic_var.get(),
             region=self.region,
         )
-        self.recorder.start(str(full_path))
+
+        self._busy = True
+        # скрываем окно ДО старта записи, чтобы его не было в кадре
+        self.root.withdraw()
+
+        try:
+            self.recorder.start(str(full_path))
+        except Exception as e:
+            self._busy = False
+            self.root.deiconify()
+            messagebox.showerror("Ошибка", f"Не удалось начать запись:\n{e}")
+            return
 
         self.start_btn.config(state=tk.DISABLED)
-        self.pause_btn.config(state=tk.NORMAL, text="Пауза")
+        self.pause_btn.config(state=tk.NORMAL, text="Пауза (F10)")
         self.stop_btn.config(state=tk.NORMAL)
         self.name_entry.config(state=tk.DISABLED)
         self.status.config(text=f"Запись: {filename}", foreground="red")
 
     def toggle_pause(self):
-        if not self.recorder:
+        if not self.recorder or not self.recorder.recording:
             return
         if self.recorder.paused:
             self.recorder.resume()
-            self.pause_btn.config(text="Пауза")
+            self.pause_btn.config(text="Пауза (F10)")
             self.status.config(text="Запись...", foreground="red")
+            # снова скрываем окно, чтобы не попало в кадр
+            self.root.withdraw()
         else:
             self.recorder.pause()
-            self.pause_btn.config(text="Продолжить")
+            self.pause_btn.config(text="Продолжить (F10)")
             self.status.config(text="Пауза", foreground="orange")
+            self.root.deiconify()
+            self.root.lift()
 
     def stop(self):
         if not self.recorder:
@@ -492,7 +616,6 @@ class App:
         self.pause_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.DISABLED)
 
-        # Склейка в отдельном потоке, чтобы UI не подвисал.
         def worker():
             try:
                 self.recorder.stop()
@@ -502,12 +625,15 @@ class App:
         threading.Thread(target=worker, daemon=True).start()
 
     def _stop_done(self):
+        self._busy = False
         self.start_btn.config(state=tk.NORMAL)
-        self.pause_btn.config(state=tk.DISABLED, text="Пауза")
+        self.pause_btn.config(state=tk.DISABLED, text="Пауза (F10)")
         self.stop_btn.config(state=tk.DISABLED)
         self.name_entry.config(state=tk.NORMAL)
         self.status.config(text="Файл сохранён в папку Видео",
                            foreground="green")
+        self.root.deiconify()
+        self.root.lift()
 
         if self.recorder and self.recorder.warning:
             title, text = self.recorder.warning
@@ -515,6 +641,11 @@ class App:
             self.recorder.warning = None
 
     def on_close(self):
+        if HAS_KB:
+            try:
+                _kb.unhook_all_hotkeys()
+            except Exception:
+                pass
         if self.recorder and self.recorder.recording:
             if messagebox.askyesno("Выход", "Идёт запись. Остановить и выйти?"):
                 self.recorder.recording = False
@@ -522,6 +653,8 @@ class App:
                     self.recorder.video_thread.join(timeout=5)
                 if self.recorder.audio_thread:
                     self.recorder.audio_thread.join(timeout=5)
+                if self.recorder.mic_thread:
+                    self.recorder.mic_thread.join(timeout=5)
                 self.root.destroy()
         else:
             self.root.destroy()
