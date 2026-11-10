@@ -56,7 +56,9 @@ def find_ffmpeg():
             return path
     return shutil.which("ffmpeg")
 
-
+# ==========================================
+# КЛАСС ЗАПИСИ
+# ==========================================
 class ScreenRecorder:
     def __init__(self, fps=20, record_audio=True, record_mic=True,
                  samplerate=48000, region=None):
@@ -81,8 +83,7 @@ class ScreenRecorder:
         self.warning = None
 
     def start(self, filename):
-        if self.recording:
-            return
+        if self.recording: return
         self.final_path = filename
         base, _ = os.path.splitext(filename)
         self.video_path = base + ".video.tmp.mp4"
@@ -259,7 +260,7 @@ class ScreenRecorder:
             if has_audio:
                 try: os.replace(self.audio_path, os.path.splitext(self.final_path)[0] + ".wav")
                 except: pass
-                self.warning = ("ffmpeg не найден", "Видео сохранено без звука.\nАудио отдельно.\nУбедитесь, что ffmpeg.exe лежит рядом с программой!")
+                self.warning = ("ffmpeg не найден", "Видео сохранено без звука.\nАудио отдельно.\nУбедитесь, что ffmpeg.exe лежит рядом!")
             return
 
         common_v = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
@@ -288,6 +289,9 @@ class ScreenRecorder:
             f.write(traceback.format_exc())
 
 
+# ==========================================
+# ГЛАВНОЕ ОКНО
+# ==========================================
 class App:
     def __init__(self, root):
         self.root = root
@@ -298,6 +302,8 @@ class App:
         self.recorder = None
         self.region = None
         self._busy = False
+        self.stop_dot = None # Ссылка на красную точку
+        
         self.videos_dir = Path.home() / "Videos"
         self.videos_dir.mkdir(exist_ok=True)
 
@@ -333,11 +339,11 @@ class App:
 
         btn_frame = ttk.Frame(self.root)
         btn_frame.pack(pady=10)
-        self.start_btn = ttk.Button(btn_frame, text="Начать (Alt+7)", command=self.start)
+        self.start_btn = ttk.Button(btn_frame, text="Начать (F7)", command=self.start)
         self.start_btn.pack(side=tk.LEFT, padx=5)
-        self.pause_btn = ttk.Button(btn_frame, text="Пауза (Alt+8)", command=self.toggle_pause, state=tk.DISABLED)
+        self.pause_btn = ttk.Button(btn_frame, text="Пауза (F8)", command=self.toggle_pause, state=tk.DISABLED)
         self.pause_btn.pack(side=tk.LEFT, padx=5)
-        self.stop_btn = ttk.Button(btn_frame, text="Стоп (Alt+9)", command=self.stop, state=tk.DISABLED)
+        self.stop_btn = ttk.Button(btn_frame, text="Стоп (F9)", command=self.stop, state=tk.DISABLED)
         self.stop_btn.pack(side=tk.LEFT, padx=5)
 
         self.status = ttk.Label(self.root, text="Готово", foreground="blue")
@@ -360,20 +366,18 @@ class App:
     def _setup_hotkeys(self):
         if HAS_KB:
             try:
+                _kb.add_hotkey('F7', lambda: self.root.after(0, self._hotkey_start))
+                _kb.add_hotkey('F8', lambda: self.root.after(0, self._hotkey_pause))
+                _kb.add_hotkey('F9', lambda: self.root.after(0, self._hotkey_stop))
                 _kb.add_hotkey('alt+7', lambda: self.root.after(0, self._hotkey_start))
                 _kb.add_hotkey('alt+8', lambda: self.root.after(0, self._hotkey_pause))
                 _kb.add_hotkey('alt+9', lambda: self.root.after(0, self._hotkey_stop))
             except Exception as e:
-                self._log_hotkey_error(e)
+                print("Ошибка горячих клавиш:", e)
 
-        # Локальный fallback
-        self.root.bind('<Alt-KeyPress-7>', lambda e: self._hotkey_start())
-        self.root.bind('<Alt-KeyPress-8>', lambda e: self._hotkey_pause())
-        self.root.bind('<Alt-KeyPress-9>', lambda e: self._hotkey_stop())
-
-    def _log_hotkey_error(self, e):
-        with open("error_log.txt", "a", encoding="utf-8") as f:
-            f.write(f"\n--- Hotkey Error {datetime.now()} ---\n{traceback.format_exc()}")
+        self.root.bind('<F7>', lambda e: self._hotkey_start())
+        self.root.bind('<F8>', lambda e: self._hotkey_pause())
+        self.root.bind('<F9>', lambda e: self._hotkey_stop())
 
     def _hotkey_start(self):
         if not self._busy: self.start()
@@ -430,6 +434,37 @@ class App:
         self.region = None
         self.region_label.config(text="весь экран", foreground="gray")
 
+    def show_stop_dot(self):
+        # Запоминаем, где было окно
+        wx = self.root.winfo_x()
+        wy = self.root.winfo_y()
+        
+        self.stop_dot = tk.Toplevel(self.root)
+        self.stop_dot.overrideredirect(True)
+        self.stop_dot.attributes("-topmost", True)
+        
+        # Размер точки
+        size = 25
+        self.stop_dot.geometry(f"{size}x{size}+{wx}+{wy}")
+        
+        # Рисуем красный круг на черном фоне окна (фон можно сделать прозрачным, но с кругом надежнее)
+        canvas = tk.Canvas(self.stop_dot, width=size, height=size, bg="black", highlightthickness=0)
+        canvas.pack()
+        canvas.create_oval(2, 2, size-2, size-2, fill="red", outline="white")
+        
+        # При клике на точку — останавливаем запись
+        canvas.bind("<Button-1>", lambda e: self.stop())
+        
+        # Делаем окно невидимым для записи экрана (чтобы точка не попала в видео)
+        if os.name == "nt":
+            try:
+                import ctypes
+                hwnd = ctypes.windll.user32.GetParent(self.stop_dot.winfo_id())
+                # WDA_EXCLUDEFROMCAPTURE = 0x00000011
+                ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, 0x00000011)
+            except Exception:
+                pass
+
     def start(self):
         if self._busy: return
         name = "".join(c for c in self.name_entry.get().strip() if c not in r'\/:*?"<>|').strip()
@@ -439,18 +474,22 @@ class App:
         self.recorder = ScreenRecorder(fps=int(self.fps_var.get()), record_audio=self.audio_var.get(), record_mic=self.mic_var.get(), region=self.region)
         self._busy = True
         self.flash_screen("#00FF00", 300)
-        self.root.withdraw()
+        
+        # Показываем красную точку на месте окна
+        self.show_stop_dot()
+        self.root.withdraw() # Скрываем основное окно
 
         try:
             self.recorder.start(str(self.videos_dir / filename))
         except Exception as e:
             self._busy = False
             self.root.deiconify()
+            if self.stop_dot: self.stop_dot.destroy()
             messagebox.showerror("Ошибка", f"Не удалось начать запись:\n{e}")
             return
 
         self.start_btn.config(state=tk.DISABLED)
-        self.pause_btn.config(state=tk.NORMAL, text="Пауза (Alt+8)")
+        self.pause_btn.config(state=tk.NORMAL)
         self.stop_btn.config(state=tk.NORMAL)
         self.status.config(text=f"Запись: {filename}", foreground="red")
 
@@ -458,55 +497,27 @@ class App:
         if not self.recorder or not self.recorder.recording: return
         if self.recorder.paused:
             self.recorder.resume()
-            self.pause_btn.config(text="Пауза (Alt+8)")
+            self.pause_btn.config(text="Пауза (F8)")
             self.status.config(text="Запись...", foreground="red")
             self.flash_screen("#00FF00", 200)
         else:
             self.recorder.pause()
-            self.pause_btn.config(text="Продолжить (Alt+8)")
+            self.pause_btn.config(text="Продолжить (F8)")
             self.status.config(text="Пауза", foreground="orange")
             self.flash_screen("#FFA500", 200)
 
     def stop(self):
         if not self.recorder or not self._busy: return
+        
+        # Убираем красную точку
+        if self.stop_dot:
+            self.stop_dot.destroy()
+            self.stop_dot = None
+
         self.flash_screen("#FF0000", 300)
         self.status.config(text="Сохранение...", foreground="blue")
         self.start_btn.config(state=tk.DISABLED)
         self.pause_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.DISABLED)
-        threading.Thread(target=self._stop_worker, daemon=True).start()
-
-    def _stop_worker(self):
-        self.recorder.stop()
-        self.root.after(0, self._stop_done)
-
-    def _stop_done(self):
-        self._busy = False
-        self.root.deiconify()
-        self.start_btn.config(state=tk.NORMAL)
-        self.pause_btn.config(state=tk.DISABLED, text="Пауза (Alt+8)")
-        self.stop_btn.config(state=tk.DISABLED)
-        self.status.config(text="Файл сохранён", foreground="green")
-        if self.recorder and self.recorder.warning:
-            messagebox.showwarning(*self.recorder.warning)
-            self.recorder.warning = None
-
-    def on_close(self):
-        if self.recorder and self.recorder.recording:
-            if messagebox.askyesno("Выход", "Идёт запись. Остановить и выйти?"):
-                self.recorder.stop()
-                self.root.destroy()
-        else:
-            self.root.destroy()
-
-
-if __name__ == "__main__":
-    try:
-        root = tk.Tk()
-        app = App(root)
-        root.mainloop()
-    except Exception as e:
-        # Запись фатальной ошибки в файл
-        with open("fatal_error.txt", "w", encoding="utf-8") as f:
-            f.write(traceback.format_exc())
-        messagebox.showerror("Фатальная ошибка", f"Программа упала:\n{e}\n\nПодробности в fatal_error.txt")
+        
+        threading.Thread(target
