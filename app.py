@@ -1,30 +1,37 @@
 import os
 import sys
-import threading
-import time
-import subprocess
-import shutil
 import traceback
-from datetime import datetime
-from pathlib import Path
-import tkinter as tk
-from tkinter import ttk, messagebox
 
-import cv2
-import numpy as np
-import mss
-import soundfile as sf
-import soundcard as sc
-
-# --- Безопасный импорт библиотеки keyboard ---
+# --- Ловим ошибки импорта библиотек (чтобы программа не закрывалась молча) ---
 try:
-    import keyboard as _kb
-    HAS_KB = True
-except Exception as e:
-    HAS_KB = False
-    print(f"Ошибка импорта keyboard: {e}")
+    import threading
+    import time
+    import subprocess
+    import shutil
+    from datetime import datetime
+    from pathlib import Path
+    import tkinter as tk
+    from tkinter import ttk, messagebox
 
-# --- Перенаправление stdout для --windowed сборки ---
+    import cv2
+    import numpy as np
+    import mss
+    import soundfile as sf
+    import soundcard as sc
+    
+    try:
+        import keyboard as _kb
+        HAS_KB = True
+    except Exception:
+        HAS_KB = False
+except Exception as e:
+    # Если любая библиотека не загрузилась — пишем ошибку в файл
+    with open("startup_error.txt", "w", encoding="utf-8") as f:
+        f.write("Ошибка при загрузке библиотек:\n")
+        f.write(traceback.format_exc())
+    sys.exit(1)
+
+# --- Перенаправление stdout для --windowed сборки (чтобы print не ронял программу) ---
 if getattr(sys, 'frozen', False) and not sys.stdout:
     class DummyStream:
         def write(self, *args, **kwargs): pass
@@ -46,19 +53,15 @@ def resource_path(rel):
 
 def find_ffmpeg():
     candidates = []
-    # 1. Внутри PyInstaller (если запакован)
     if hasattr(sys, "_MEIPASS"):
         candidates.append(os.path.join(sys._MEIPASS, "ffmpeg.exe"))
-    # 2. Рядом с .exe (главный вариант для сборки в папку)
     if getattr(sys, "frozen", False):
         candidates.append(os.path.join(os.path.dirname(sys.executable), "ffmpeg.exe"))
-    # 3. Рядом со скриптом (при запуске из исходников)
     candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ffmpeg.exe"))
     
     for path in candidates:
         if os.path.exists(path) and os.path.getsize(path) > 100000:
             return path
-    # 4. В системном PATH
     return shutil.which("ffmpeg")
 
 # ==========================================
@@ -261,12 +264,10 @@ class ScreenRecorder:
         ffmpeg = find_ffmpeg()
 
         if not ffmpeg:
-            try: 
-                os.replace(self.video_path, self.final_path)
+            try: os.replace(self.video_path, self.final_path)
             except: pass
             if has_audio:
-                try: 
-                    os.replace(self.audio_path, os.path.splitext(self.final_path)[0] + ".wav")
+                try: os.replace(self.audio_path, os.path.splitext(self.final_path)[0] + ".wav")
                 except: pass
             self.warning = ("ffmpeg не найден", 
                             "Видео сохранено БЕЗ ЗВУКА в сыром формате.\n"
@@ -283,7 +284,7 @@ class ScreenRecorder:
 
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         try:
-            subprocess.run(cmd, check=True, creationflags=flags, capture_output=True, text=True)
+            subprocess.run(cmd, check=True, creationflags=flags, capture_output=True, text=True, encoding='utf-8', errors='replace')
             try: os.remove(self.video_path)
             except: pass
             if has_audio:
@@ -291,9 +292,7 @@ class ScreenRecorder:
                 except: pass
         except subprocess.CalledProcessError as e:
             self._log_error_text(f"FFMPEG ERROR:\nCmd: {cmd}\nStderr: {e.stderr}")
-            self.warning = ("Ошибка склейки ffmpeg", 
-                            "FFmpeg не смог обработать видео. Сохранен сырой файл без звука.\n"
-                            "Подробности в error_log.txt")
+            self.warning = ("Ошибка склейки ffmpeg", "FFmpeg не смог обработать видео. Сохранен сырой файл без звука.\nПодробности в error_log.txt")
             try: os.replace(self.video_path, self.final_path)
             except: pass
         except Exception as e:
@@ -394,8 +393,8 @@ class App:
                 _kb.add_hotkey('alt+7', lambda: self.root.after(0, self._hotkey_start))
                 _kb.add_hotkey('alt+8', lambda: self.root.after(0, self._hotkey_pause))
                 _kb.add_hotkey('alt+9', lambda: self.root.after(0, self._hotkey_stop))
-            except Exception as e:
-                print("Ошибка горячих клавиш:", e)
+            except Exception:
+                pass
 
         self.root.bind('<F7>', lambda e: self._hotkey_start())
         self.root.bind('<F8>', lambda e: self._hotkey_pause())
@@ -464,18 +463,24 @@ class App:
         self.stop_dot.overrideredirect(True)
         self.stop_dot.attributes("-topmost", True)
         
-        size = 30
+        # Размер кнопки
+        size = 36
         self.stop_dot.geometry(f"{size}x{size}+{wx}+{wy}")
         
-        self.stop_dot.configure(bg="#000001") 
-        self.stop_dot.attributes("-transparentcolor", "#000001")
+        # Делаем фон прозрачным
+        self.stop_dot.configure(bg="#010203") 
+        self.stop_dot.attributes("-transparentcolor", "#010203")
         
-        canvas = tk.Canvas(self.stop_dot, width=size, height=size, bg="#000001", highlightthickness=0)
+        canvas = tk.Canvas(self.stop_dot, width=size, height=size, bg="#010203", highlightthickness=0)
         canvas.pack()
-        canvas.create_oval(2, 2, size-2, size-2, fill="red", outline="white", width=2)
+        
+        # Рисуем красный кружок и белый квадрат внутри (кнопка Стоп)
+        canvas.create_oval(2, 2, size-2, size-2, fill="#d32f2f", outline="#ffffff", width=2)
+        canvas.create_rectangle(11, 11, size-11, size-11, fill="#ffffff", outline="")
         
         canvas.bind("<Button-1>", lambda e: self.stop())
         
+        # Делаем окно невидимым для захвата экрана (чтобы кнопка не попала в видео)
         if os.name == "nt":
             try:
                 import ctypes
@@ -495,7 +500,7 @@ class App:
         self.flash_screen("#00FF00", 300)
         
         self.show_stop_dot()
-        self.root.withdraw()
+        self.root.withdraw() # Прячем окно программы
 
         try:
             self.recorder.start(str(self.videos_dir / filename))
@@ -519,4 +524,63 @@ class App:
             self.status.config(text="Запись...", foreground="red")
             self.flash_screen("#00FF00", 200)
         else:
-            self.reco
+            self.recorder.pause()
+            self.pause_btn.config(text="Продолжить (F8)")
+            self.status.config(text="Пауза", foreground="orange")
+            self.flash_screen("#FFA500", 200)
+
+    def stop(self):
+        if not self.recorder or not self._busy: return
+        
+        # Убираем красную точку
+        if self.stop_dot:
+            self.stop_dot.destroy()
+            self.stop_dot = None
+
+        self.flash_screen("#FF0000", 300)
+        self.status.config(text="Сохранение и обработка...", foreground="blue")
+        self.start_btn.config(state=tk.DISABLED)
+        self.pause_btn.config(state=tk.DISABLED)
+        self.stop_btn.config(state=tk.DISABLED)
+        
+        threading.Thread(target=self._stop_worker, daemon=True).start()
+
+    def _stop_worker(self):
+        try:
+            self.recorder.stop()
+        except Exception as e:
+            with open("worker_error.txt", "w", encoding="utf-8") as f:
+                f.write(traceback.format_exc())
+        finally:
+            self.root.after(0, self._stop_done)
+
+    def _stop_done(self):
+        self._busy = False
+        self.root.deiconify() # Возвращаем окно программы обратно
+        self.start_btn.config(state=tk.NORMAL)
+        self.pause_btn.config(state=tk.DISABLED, text="Пауза (F8)")
+        self.stop_btn.config(state=tk.DISABLED)
+        self.status.config(text="Файл сохранён в папку Видео", foreground="green")
+        
+        if self.recorder and self.recorder.warning:
+            messagebox.showwarning(*self.recorder.warning)
+            self.recorder.warning = None
+
+    def on_close(self):
+        if self.recorder and self.recorder.recording:
+            if messagebox.askyesno("Выход", "Идёт запись. Остановить и выйти?"):
+                if self.stop_dot: self.stop_dot.destroy()
+                self.recorder.stop()
+                self.root.destroy()
+        else:
+            self.root.destroy()
+
+if __name__ == "__main__":
+    try:
+        root = tk.Tk()
+        app = App(root)
+        root.mainloop()
+    except Exception as e:
+        with open("fatal_error.txt", "w", encoding="utf-8") as f:
+            f.write(traceback.format_exc())
+        messagebox.showerror("Фатальная ошибка", f"Программа упала:\n{e}\n\nПодробности в fatal_error.txt")
