@@ -4,3 +4,5 @@ numpy
 soundfile
 soundcard
 keyboard
+cffi
+pyinstaller
