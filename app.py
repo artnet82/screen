@@ -46,14 +46,19 @@ def resource_path(rel):
 
 def find_ffmpeg():
     candidates = []
+    # 1. Внутри PyInstaller (если запакован)
     if hasattr(sys, "_MEIPASS"):
         candidates.append(os.path.join(sys._MEIPASS, "ffmpeg.exe"))
+    # 2. Рядом с .exe (главный вариант для сборки в папку)
     if getattr(sys, "frozen", False):
         candidates.append(os.path.join(os.path.dirname(sys.executable), "ffmpeg.exe"))
+    # 3. Рядом со скриптом (при запуске из исходников)
     candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ffmpeg.exe"))
+    
     for path in candidates:
         if os.path.exists(path) and os.path.getsize(path) > 100000:
             return path
+    # 4. В системном PATH
     return shutil.which("ffmpeg")
 
 # ==========================================
@@ -251,16 +256,22 @@ class ScreenRecorder:
 
     def _merge(self):
         if not os.path.exists(self.video_path): return
+        
         has_audio = bool(self.audio_path and os.path.exists(self.audio_path) and os.path.getsize(self.audio_path) > 1000)
         ffmpeg = find_ffmpeg()
 
         if not ffmpeg:
-            try: os.replace(self.video_path, self.final_path)
+            try: 
+                os.replace(self.video_path, self.final_path)
             except: pass
             if has_audio:
-                try: os.replace(self.audio_path, os.path.splitext(self.final_path)[0] + ".wav")
+                try: 
+                    os.replace(self.audio_path, os.path.splitext(self.final_path)[0] + ".wav")
                 except: pass
-                self.warning = ("ffmpeg не найден", "Видео сохранено без звука.\nАудио отдельно.\nУбедитесь, что ffmpeg.exe лежит рядом!")
+            self.warning = ("ffmpeg не найден", 
+                            "Видео сохранено БЕЗ ЗВУКА в сыром формате.\n"
+                            "Аудио сохранено отдельным WAV-файлом.\n\n"
+                            "Убедитесь, что ffmpeg.exe лежит в одной папке с программой!")
             return
 
         common_v = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
@@ -272,12 +283,19 @@ class ScreenRecorder:
 
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         try:
-            subprocess.run(cmd, check=True, creationflags=flags)
+            subprocess.run(cmd, check=True, creationflags=flags, capture_output=True, text=True)
             try: os.remove(self.video_path)
             except: pass
             if has_audio:
                 try: os.remove(self.audio_path)
                 except: pass
+        except subprocess.CalledProcessError as e:
+            self._log_error_text(f"FFMPEG ERROR:\nCmd: {cmd}\nStderr: {e.stderr}")
+            self.warning = ("Ошибка склейки ffmpeg", 
+                            "FFmpeg не смог обработать видео. Сохранен сырой файл без звука.\n"
+                            "Подробности в error_log.txt")
+            try: os.replace(self.video_path, self.final_path)
+            except: pass
         except Exception as e:
             self._log_error(e)
             try: os.replace(self.video_path, self.final_path)
@@ -287,6 +305,10 @@ class ScreenRecorder:
         with open("error_log.txt", "a", encoding="utf-8") as f:
             f.write(f"\n--- {datetime.now()} ---\n")
             f.write(traceback.format_exc())
+
+    def _log_error_text(self, text):
+        with open("error_log.txt", "a", encoding="utf-8") as f:
+            f.write(f"\n--- {datetime.now()} ---\n{text}\n")
 
 
 # ==========================================
@@ -302,7 +324,7 @@ class App:
         self.recorder = None
         self.region = None
         self._busy = False
-        self.stop_dot = None # Ссылка на красную точку
+        self.stop_dot = None
         
         self.videos_dir = Path.home() / "Videos"
         self.videos_dir.mkdir(exist_ok=True)
@@ -435,7 +457,6 @@ class App:
         self.region_label.config(text="весь экран", foreground="gray")
 
     def show_stop_dot(self):
-        # Запоминаем, где было окно
         wx = self.root.winfo_x()
         wy = self.root.winfo_y()
         
@@ -443,24 +464,22 @@ class App:
         self.stop_dot.overrideredirect(True)
         self.stop_dot.attributes("-topmost", True)
         
-        # Размер точки
-        size = 25
+        size = 30
         self.stop_dot.geometry(f"{size}x{size}+{wx}+{wy}")
         
-        # Рисуем красный круг на черном фоне окна (фон можно сделать прозрачным, но с кругом надежнее)
-        canvas = tk.Canvas(self.stop_dot, width=size, height=size, bg="black", highlightthickness=0)
-        canvas.pack()
-        canvas.create_oval(2, 2, size-2, size-2, fill="red", outline="white")
+        self.stop_dot.configure(bg="#000001") 
+        self.stop_dot.attributes("-transparentcolor", "#000001")
         
-        # При клике на точку — останавливаем запись
+        canvas = tk.Canvas(self.stop_dot, width=size, height=size, bg="#000001", highlightthickness=0)
+        canvas.pack()
+        canvas.create_oval(2, 2, size-2, size-2, fill="red", outline="white", width=2)
+        
         canvas.bind("<Button-1>", lambda e: self.stop())
         
-        # Делаем окно невидимым для записи экрана (чтобы точка не попала в видео)
         if os.name == "nt":
             try:
                 import ctypes
                 hwnd = ctypes.windll.user32.GetParent(self.stop_dot.winfo_id())
-                # WDA_EXCLUDEFROMCAPTURE = 0x00000011
                 ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, 0x00000011)
             except Exception:
                 pass
@@ -475,9 +494,8 @@ class App:
         self._busy = True
         self.flash_screen("#00FF00", 300)
         
-        # Показываем красную точку на месте окна
         self.show_stop_dot()
-        self.root.withdraw() # Скрываем основное окно
+        self.root.withdraw()
 
         try:
             self.recorder.start(str(self.videos_dir / filename))
@@ -501,23 +519,4 @@ class App:
             self.status.config(text="Запись...", foreground="red")
             self.flash_screen("#00FF00", 200)
         else:
-            self.recorder.pause()
-            self.pause_btn.config(text="Продолжить (F8)")
-            self.status.config(text="Пауза", foreground="orange")
-            self.flash_screen("#FFA500", 200)
-
-    def stop(self):
-        if not self.recorder or not self._busy: return
-        
-        # Убираем красную точку
-        if self.stop_dot:
-            self.stop_dot.destroy()
-            self.stop_dot = None
-
-        self.flash_screen("#FF0000", 300)
-        self.status.config(text="Сохранение...", foreground="blue")
-        self.start_btn.config(state=tk.DISABLED)
-        self.pause_btn.config(state=tk.DISABLED)
-        self.stop_btn.config(state=tk.DISABLED)
-        
-        threading.Thread(target
+            self.reco
