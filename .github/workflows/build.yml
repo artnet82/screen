@@ -24,7 +24,7 @@ jobs:
         pip install -r requirements.txt
 
     - name: Build with PyInstaller
-      run: pyinstaller --onedir --windowed --name="ScreenRecorder" --hidden-import=soundcard --hidden-import=soundcard.mediafoundation --hidden-import=cv2 --collect-submodules=cv2 --collect-submodules=soundcard --collect-data=soundcard --add-data "ffmpeg.exe;." app.py
+      run: pyinstaller --onedir --windowed --name="ScreenRecorder" --hidden-import=soundcard --hidden-import=soundcard.mediafoundation --hidden-import=cv2 --collect-submodules=cv2 --collect-submodules=soundcard --collect-data=soundcard --collect-all numpy --collect-all cv2 --add-data "ffmpeg.exe;." app.py
 
     - name: Prepare artifact
       run: copy ffmpeg.exe dist\ScreenRecorder\ffmpeg.exe
