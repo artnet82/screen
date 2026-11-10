@@ -5,4 +5,4 @@ soundfile
 soundcard
 keyboard
 cffi
-pyinstaller
+pyinstaller==5.13.2
