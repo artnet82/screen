@@ -370,20 +370,6 @@ class App:
         self.status = ttk.Label(self.root, text="Готово", foreground="blue")
         self.status.pack(pady=10)
 
-    def flash_screen(self, color, duration=250):
-        try:
-            flash = tk.Toplevel(self.root)
-            flash.overrideredirect(True)
-            flash.attributes("-topmost", True)
-            flash.attributes("-alpha", 0.3)
-            flash.configure(bg=color)
-            sw = flash.winfo_screenwidth()
-            sh = flash.winfo_screenheight()
-            flash.geometry(f"{sw}x{sh}+0+0")
-            flash.after(duration, flash.destroy)
-        except Exception:
-            pass
-
     def _setup_hotkeys(self):
         if HAS_KB:
             try:
@@ -497,7 +483,6 @@ class App:
         
         self.recorder = ScreenRecorder(fps=int(self.fps_var.get()), record_audio=self.audio_var.get(), record_mic=self.mic_var.get(), region=self.region)
         self._busy = True
-        self.flash_screen("#00FF00", 300)
         
         self.show_stop_dot()
         self.root.withdraw() # Прячем окно программы
@@ -521,66 +506,4 @@ class App:
         if self.recorder.paused:
             self.recorder.resume()
             self.pause_btn.config(text="Пауза (F8)")
-            self.status.config(text="Запись...", foreground="red")
-            self.flash_screen("#00FF00", 200)
-        else:
-            self.recorder.pause()
-            self.pause_btn.config(text="Продолжить (F8)")
-            self.status.config(text="Пауза", foreground="orange")
-            self.flash_screen("#FFA500", 200)
-
-    def stop(self):
-        if not self.recorder or not self._busy: return
-        
-        # Убираем красную точку
-        if self.stop_dot:
-            self.stop_dot.destroy()
-            self.stop_dot = None
-
-        self.flash_screen("#FF0000", 300)
-        self.status.config(text="Сохранение и обработка...", foreground="blue")
-        self.start_btn.config(state=tk.DISABLED)
-        self.pause_btn.config(state=tk.DISABLED)
-        self.stop_btn.config(state=tk.DISABLED)
-        
-        threading.Thread(target=self._stop_worker, daemon=True).start()
-
-    def _stop_worker(self):
-        try:
-            self.recorder.stop()
-        except Exception as e:
-            with open("worker_error.txt", "w", encoding="utf-8") as f:
-                f.write(traceback.format_exc())
-        finally:
-            self.root.after(0, self._stop_done)
-
-    def _stop_done(self):
-        self._busy = False
-        self.root.deiconify() # Возвращаем окно программы обратно
-        self.start_btn.config(state=tk.NORMAL)
-        self.pause_btn.config(state=tk.DISABLED, text="Пауза (F8)")
-        self.stop_btn.config(state=tk.DISABLED)
-        self.status.config(text="Файл сохранён в папку Видео", foreground="green")
-        
-        if self.recorder and self.recorder.warning:
-            messagebox.showwarning(*self.recorder.warning)
-            self.recorder.warning = None
-
-    def on_close(self):
-        if self.recorder and self.recorder.recording:
-            if messagebox.askyesno("Выход", "Идёт запись. Остановить и выйти?"):
-                if self.stop_dot: self.stop_dot.destroy()
-                self.recorder.stop()
-                self.root.destroy()
-        else:
-            self.root.destroy()
-
-if __name__ == "__main__":
-    try:
-        root = tk.Tk()
-        app = App(root)
-        root.mainloop()
-    except Exception as e:
-        with open("fatal_error.txt", "w", encoding="utf-8") as f:
-            f.write(traceback.format_exc())
-        messagebox.showerror("Фатальная ошибка", f"Программа упала:\n{e}\n\nПодробности в fatal_error.txt")
+            self.status.c
